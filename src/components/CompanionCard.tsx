@@ -1,9 +1,10 @@
 "use client";
 
-import { addBookmark, removeBookmark } from "@/lib/action/companion.actions";
+import { toggleBookmark } from "@/lib/action/companion.actions";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 
 interface CompanionCardProps {
   id: string;
@@ -22,24 +23,37 @@ const CompanionCard = ({
   subject,
   duration,
   color,
-  bookmarked,
+  bookmarked: initialBookmarked,
 }: CompanionCardProps) => {
   const pathname = usePathname();
+  const [isBookmarked, setIsBookmarked] = useState(initialBookmarked);
+  const [isLoading, setIsLoading] = useState(false);
+  
   const handleBookmark = async () => {
-    if (bookmarked) {
-      await removeBookmark(id, pathname);
-    } else {
-      await addBookmark(id, pathname);
+    setIsLoading(true);
+    try {
+      const result = await toggleBookmark(id, pathname);
+      if (result) {
+        setIsBookmarked(result.action === 'added');
+      }
+    } catch (error) {
+      console.error('Error toggling bookmark:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
   return (
     <article className="companion-card" style={{ backgroundColor: color }}>
       <div className="flex justify-between items-center">
         <div className="subject-badge">{subject}</div>
-        <button className="companion-bookmark" onClick={handleBookmark}>
+        <button 
+          className={`companion-bookmark ${isLoading ? 'opacity-50' : ''}`} 
+          onClick={handleBookmark}
+          disabled={isLoading}
+        >
           <Image
             src={
-              bookmarked ? "/icons/bookmark-filled.svg" : "/icons/bookmark.svg"
+              isBookmarked ? "/icons/bookmark-filled.svg" : "/icons/bookmark.svg"
             }
             alt="bookmark"
             width={12.5}

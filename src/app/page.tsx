@@ -2,11 +2,11 @@ import CompanionCard from "@/components/CompanionCard";
 import CompanionsList from "@/components/CompanionsList";
 import CTA from "@/components/CTA";
 import {recentSessions} from "@/constants";
-import { getAllCompanions, getRecentSessions } from "@/lib/action/companion.actions";
+import { getAllCompanionsWithBookmarkStatus, getRecentSessions } from "@/lib/action/companion.actions";
 import {getSubjectColor} from "@/lib/utils";
 
 const Page = async () => {
-    const companions = await getAllCompanions({ limit: 3 });
+    const companions = await getAllCompanionsWithBookmarkStatus({ limit: 3 });
     const recentSessionsCompanions = await getRecentSessions(10);
 
   return (

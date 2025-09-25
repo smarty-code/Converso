@@ -41,6 +41,44 @@ export const getAllCompanions = async ({ limit = 10, page = 1, subject, topic }:
     return companions;
 }
 
+export const getAllCompanionsWithBookmarkStatus = async ({ limit = 10, page = 1, subject, topic }: GetAllCompanions) => {
+    const { userId } = await auth();
+    const supabase = createSupabaseClient();
+
+    let query = supabase.from('companions').select();
+
+    if(subject && topic) {
+        query = query.ilike('subject', `%${subject}%`)
+            .or(`topic.ilike.%${topic}%,name.ilike.%${topic}%`)
+    } else if(subject) {
+        query = query.ilike('subject', `%${subject}%`)
+    } else if(topic) {
+        query = query.or(`topic.ilike.%${topic}%,name.ilike.%${topic}%`)
+    }
+
+    query = query.range((page - 1) * limit, page * limit - 1);
+
+    const { data: companions, error } = await query;
+
+    if(error) throw new Error(error.message);
+
+    if (!userId || !companions) return companions?.map(companion => ({ ...companion, bookmarked: false })) || [];
+
+    // Get user's bookmarks
+    const { data: bookmarks } = await supabase
+        .from('bookmarks')
+        .select('companion_id')
+        .eq('user_id', userId);
+
+    const bookmarkedIds = new Set(bookmarks?.map(b => b.companion_id) || []);
+
+    // Add bookmarked status to each companion
+    return companions.map(companion => ({
+        ...companion,
+        bookmarked: bookmarkedIds.has(companion.id)
+    }));
+}
+
 export const getCompanion = async (id: string) => {
     const supabase = createSupabaseClient();
 
@@ -74,11 +112,25 @@ export const getRecentSessions = async (limit = 10) => {
         .from('session_history')
         .select(`companions:companion_id (*)`)
         .order('created_at', { ascending: false })
-        .limit(limit)
+        .limit(50) // Get more records to account for duplicates
 
     if(error) throw new Error(error.message);
 
-    return data.map(({ companions }) => companions);
+    // Remove duplicates by companion ID
+    const companions = data.map(({ companions }) => companions);
+    const uniqueCompanions: any[] = [];
+    const seenIds = new Set();
+    
+    for (const companion of companions) {
+        const comp = companion as any;
+        if (comp && comp.id && !seenIds.has(comp.id)) {
+            seenIds.add(comp.id);
+            uniqueCompanions.push(comp);
+            if (uniqueCompanions.length >= limit) break;
+        }
+    }
+
+    return uniqueCompanions;
 }
 
 export const getUserSessions = async (userId: string, limit = 10) => {
@@ -88,11 +140,25 @@ export const getUserSessions = async (userId: string, limit = 10) => {
         .select(`companions:companion_id (*)`)
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
-        .limit(limit)
+        .limit(50) // Get more records to account for duplicates
 
     if(error) throw new Error(error.message);
 
-    return data.map(({ companions }) => companions);
+    // Remove duplicates by companion ID  
+    const companions = data.map(({ companions }) => companions);
+    const uniqueCompanions: any[] = [];
+    const seenIds = new Set();
+    
+    for (const companion of companions) {
+        const comp = companion as any;
+        if (comp && comp.id && !seenIds.has(comp.id)) {
+            seenIds.add(comp.id);
+            uniqueCompanions.push(comp);
+            if (uniqueCompanions.length >= limit) break;
+        }
+    }
+
+    return uniqueCompanions;
 }
 
 export const getUserCompanions = async (userId: string) => {
@@ -138,21 +204,78 @@ export const newCompanionPermissions = async () => {
 }
 
 // Bookmarks
-export const addBookmark = async (companionId: string, path: string) => {
-  const { userId } = await auth();
-  if (!userId) return;
+export const isBookmarked = async (companionId: string, userId: string) => {
   const supabase = createSupabaseClient();
-  const { data, error } = await supabase.from("bookmarks").insert({
-    companion_id: companionId,
-    user_id: userId,
-  });
-  if (error) {
-    throw new Error(error.message);
+  const { data, error } = await supabase
+    .from("bookmarks")
+    .select("id")
+    .eq("companion_id", companionId)
+    .eq("user_id", userId)
+    .single();
+    
+  if (error && error.code !== 'PGRST116') { // PGRST116 is "no rows returned"
+    console.warn("Error checking bookmark status:", error.message);
+    return false;
   }
-  // Revalidate the path to force a re-render of the page
+  
+  return !!data;
+};
 
-  revalidatePath(path);
-  return data;
+export const toggleBookmark = async (companionId: string, path: string) => {
+  const { userId } = await auth();
+  if (!userId) return null;
+  
+  const supabase = createSupabaseClient();
+  
+  // Check if already bookmarked
+  const { data: existingBookmark } = await supabase
+    .from("bookmarks")
+    .select("id")
+    .eq("companion_id", companionId)
+    .eq("user_id", userId)
+    .single();
+    
+  if (existingBookmark) {
+    // Remove bookmark if it exists
+    const { error } = await supabase
+      .from("bookmarks")
+      .delete()
+      .eq("companion_id", companionId)
+      .eq("user_id", userId);
+      
+    if (error) {
+      if (error.message.includes("invalid input syntax for type uuid")) {
+        console.warn("User ID or Companion ID format incompatible with UUID column. Please update database schema.");
+        return null;
+      }
+      throw new Error(error.message);
+    }
+    
+    revalidatePath(path);
+    return { action: 'removed' };
+  } else {
+    // Add bookmark if it doesn't exist
+    const { data, error } = await supabase.from("bookmarks").insert({
+      companion_id: companionId,
+      user_id: userId,
+    });
+    
+    if (error) {
+      if (error.message.includes("invalid input syntax for type uuid")) {
+        console.warn("User ID or Companion ID format incompatible with UUID column. Please update database schema.");
+        return null;
+      }
+      throw new Error(error.message);
+    }
+    
+    revalidatePath(path);
+    return { action: 'added', data };
+  }
+};
+
+// Keep the old function for backward compatibility, but make it use toggle logic
+export const addBookmark = async (companionId: string, path: string) => {
+  return await toggleBookmark(companionId, path);
 };
 
 export const removeBookmark = async (companionId: string, path: string) => {
@@ -165,6 +288,11 @@ export const removeBookmark = async (companionId: string, path: string) => {
     .eq("companion_id", companionId)
     .eq("user_id", userId);
   if (error) {
+    // Handle UUID format error gracefully
+    if (error.message.includes("invalid input syntax for type uuid")) {
+      console.warn("User ID or Companion ID format incompatible with UUID column. Please update database schema.");
+      return null;
+    }
     throw new Error(error.message);
   }
   revalidatePath(path);
@@ -179,8 +307,13 @@ export const getBookmarkedCompanions = async (userId: string) => {
     .select(`companions:companion_id (*)`) // Notice the (*) to get all the companion data
     .eq("user_id", userId);
   if (error) {
+    // Handle UUID format error gracefully
+    if (error.message.includes("invalid input syntax for type uuid")) {
+      console.warn("User ID format incompatible with UUID column. Please update database schema.");
+      return [];
+    }
     throw new Error(error.message);
   }
   // We don't need the bookmarks data, so we return only the companions
-  return data.map(({ companions }) => companions);
+  return data?.map(({ companions }) => companions) || [];
 };
